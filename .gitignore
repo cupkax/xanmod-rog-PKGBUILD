@@ -1,7 +1,0 @@
-*.zst
-*.zst.sig
-*.lz
-*.lz.sig
-src-cache/*
-src/*
-pkg/*
