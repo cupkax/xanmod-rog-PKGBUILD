@@ -1,0 +1,10 @@
+*
+!asus-linux-patches/
+!linux-xanmod choose-gcc-optimization.sh  
+!PKGBUILD
+!asus-linux/
+!linux-xanmod/
+!.gitmodules 
+!.SRCINFO 
+!choose-gcc-optimization.sh
+
