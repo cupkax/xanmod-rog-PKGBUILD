@@ -6,29 +6,18 @@
 # Contributor: Tobias Powalowski <tpowa@archlinux.org>
 # Contributor: Thomas Baechler <thomas@archlinux.org>
 
-##
-## Ultra Kernel Samepage Merging, disabling this will increase memory consumption
-## See: https://github.com/dolohow/uksm
-##
-##  build with 'env no_uksm=foo makepkg ...' to skip UKSM patch
-##
-if [[ -v no_uksm ]]; then
-  no_uksm=y
-fi
+# shellcheck disable=SC2034,SC2164
 
-## Apply Redhat kernel patch
 ##
-## Enable this to apply redhat/fedora kernel patch from asus-linux fedora kernel sources
-## This is completely optional but mostly plays nicely in my experience.
+## Xanmod-ROG options:
 ##
-#if [[ -v redhat_patch ]]; then
-#  redhat_patch=y
-#fi
+## none for now...
 
+## Xanmod options:
 ##
 ## The following variables can be customized at build time. Use env or export to change at your wish
 ##
-##   Example: env _microarchitecture=99 use_numa=n use_tracers=n use_pds=n makepkg -sc
+##   Example: env _microarchitecture=98 use_numa=n use_tracers=n makepkg -sc
 ##
 ## Look inside 'choose-gcc-optimization.sh' to choose your microarchitecture
 ## Valid numbers between: 0 to 99
@@ -54,6 +43,16 @@ if [ -z ${use_tracers+x} ]; then
   use_tracers=y
 fi
 
+## Choose between GCC and CLANG config (default is GCC)
+if [ -z ${_compiler+x} ]; then
+  _compiler=gcc
+fi
+
+# Compress modules with ZSTD (to save disk space)
+if [ -z ${_compress_modules+x} ]; then
+  _compress_modules=y
+fi
+
 # Compile ONLY used modules to VASTLY reduce the number of modules built
 # and the build time.
 #
@@ -62,7 +61,7 @@ fi
 # This PKGBUILD read the database kept if it exists
 #
 # More at this wiki page ---> https://wiki.archlinux.org/index.php/Modprobed-db
-if [ -z ${_localmodcfg} ]; then
+if [ -z "${_localmodcfg}" ]; then
   _localmodcfg=n
 fi
 
@@ -71,191 +70,183 @@ _makenconfig=
 
 ### IMPORTANT: Do no edit below this line unless you know what you're doing
 
-#_major="5.11"
-# curl -s "https://api.github.com/repos/xanmod/linux/releases" | jq -r '[.[] | select(.target_commitish == "$_major")][].tag_name' | sort -V | tail -n1
-
 pkgbase=linux-xanmod-rog
-xanmod=5.12.4-xanmod1
-pkgver=${xanmod//-/+}
-#pkgver=5.12.4+pre0
-pkgrel=2
-
+xanmod=5.14.15-xanmod1
+pkgver=${xanmod//-/.}
+#pkgver=5.14.14.xanpre0     # NOTE: start 4th position with 'xan...', we rely on parsing for '.xan...' later
+pkgrel=1
 pkgdesc='Linux Xanmod'
 url="http://www.xanmod.org/"
 arch=(x86_64)
 license=(GPL2)
 makedepends=(
-  xmlto kmod inetutils bc libelf cpio
+  bc kmod libelf pahole cpio perl tar xz zstd
   "gcc>=11.0"
 )
+if [ "${_compiler}" = "clang" ]; then
+  makedepends+=(clang llvm lld python)
+fi
 options=('!strip')
 _major=$(echo $xanmod | cut -d'.' -f1,2)
-_patch=$(echo ${xanmod%-xanmod?} | cut -d'.' -f3)
+_patchver=$(echo $pkgver | cut -d'.' -f3)
 _branch="$(echo $xanmod | cut -d'.' -f1).x"
+_localversion=$(echo $pkgver | cut -d'.' -f4)
 
-_fedora_kernel_commit_id=29f433a6b9ba268b0202ac8200cf2ce38d6071b7
 source=("https://cdn.kernel.org/pub/linux/kernel/v${_branch}/linux-${_major}.tar."{xz,sign}
         "https://github.com/xanmod/linux/releases/download/${xanmod}/patch-${xanmod}.xz"
         "choose-gcc-optimization.sh"
-        "https://gitlab.com/asus-linux/fedora-kernel/-/archive/$_fedora_kernel_commit_id/fedora-kernel-$_fedora_kernel_commit_id.zip"
-        "5.12-acpi-1of2-turn-off-unused.patch"::"https://git.kernel.org/pub/scm/linux/kernel/git/rafael/linux-pm.git/patch/?id=4b9ee772eaa82188b0eb8e05bdd1707c2a992004"
-        "5.12-acpi-2of2-turn-off-unconditionally.patch"::"https://git.kernel.org/pub/scm/linux/kernel/git/rafael/linux-pm.git/patch/?id=7e4fdeafa61f2b653fcf9678f09935e55756aed2"
-        "5.12.4--Add-jack-toggle-support-for-headphones-on-Asus-ROG-Z.patch"
+        "sphinx-workaround.patch"
+
+        # incremental kernel.org patch ahead of official Xanmod release
+        #"https://cdn.kernel.org/pub/linux/kernel/v5.x/patch-5.14.1.xz"
+        #"https://cdn.kernel.org/pub/linux/kernel/v5.x/incr/patch-5.14.13-14.xz"
+        # stable rc patches
+        #"Linux-5.14.5-rc1.patch"
+
+        # don't drop shared caches on C3 state transitions
+        "x86-ACPI-State-Optimize-C3-entry-on-AMD-CPUs.patch"                            # landing in 5.15
+
+        # patch from Chromium developers; more accurately report battery state changes
+        "acpi-battery-Always-read-fresh-battery-state-on-update.patch"                  # awaiting ack ...
+
+        # k10temp support for Zen3 APUs
+        #"x86-amd_nb-Add-AMD-family-19h-model-50h-PCI-ids.patch"                        # included in 5.14
+        "hwmon-k10temp-support-Zen3-APUs.patch"                                         # landing in 5.15
+
+        # AMD pstate cpufreq driver v2                                                  # included in xanmod tree
+
+        # squelch overzealous 802.11 regdomain not set warnings
+        "cfg80211-dont-WARN-if-a-self-managed-device.patch"
+
+        # ASUS ROG enablement
+        "asus-wmi-Add-panel-overdrive-functionality.patch"                              # landing in 5.15
+        "asus-wmi-Add-dgpu-disable-method.patch"                                        # "
+        "asus-wmi-Add-egpu-enable-method.patch"                                         # "
+        "HID-asus-Prevent-Claymore-sending-suspend-event.patch"                         # "
+        "HID-asus-Reduce-object-size-by-consolidating-calls.patch"                      # awaiting ack ...
+        "v5-asus-wmi-Add-support-for-platform_profile.patch"                            # landing in 5.15
+        "v16-asus-wmi-Add-support-for-custom-fan-curves.patch"                          # -next
+
+        # mediatek mt7921 bt/wifi patches
+        #"Bluetooth-btusb-Fixed-too-many-in-token-issue-for-Me.patch"
+        #"Bluetooth-btusb-Add-support-for-Lite-On-Mediatek-Chi.patch"
+        #"mt76-mt7921-continue-to-probe-driver-when-fw-already.patch"
+        "mt76-mt7921-Fix-out-of-order-process-by-invalid-even.patch"
+        "mt76-mt7921-Add-mt7922-support.patch"
+        "1-1-Bluetooth-btusb-Enable-MSFT-extension-for-Mediatek-Chip-MT7921.patch"
+        "1-2-mt76-mt7915-send-EAPOL-frames-at-lowest-rate.patch"
+        "2-2-mt76-mt7921-send-EAPOL-frames-at-lowest-rate.patch"
+        "mt76-mt7921-enable-VO-tx-aggregation.patch"
+        "mt76-mt7921-fix-dma-hang-in-rmmod.patch"
+        "mt76-mt7921-fix-firmware-usage-of-RA-info-using-legacy-rates.patch"
+        "mt76-mt7921-fix-the-inconsistent-state-between-bind-and-unbind.patch"
+        "mt76-mt7921-report-HE-MU-radiotap.patch"
+        "v2-mt76-mt7921-fix-kernel-warning-from-cfg80211_calculate_bitrate.patch"
+        "1-2-mt76-mt7921-robustify-hardware-initialization-flow.patch"
+        "2-2-mt76-mt7921-fix-retrying-release-semaphore-without-end.patch"
+        "1-2-Bluetooth-btusb-Add-Mediatek-MT7921-support-for-Foxconn.patch"
+        "2-2-Bluetooth-btusb-Add-Mediatek-MT7921-support-for-IMC-Network.patch"
+        "Bluetooth-btusb-Add-support-for-IMC-Networks-Mediatek-Chip.patch"
+        "Bluetooth-btusb-Add-support-for-Foxconn-Mediatek-Chip.patch"
+        "Bluetooth-btusb-Add-support-for-IMC-Networks-Mediatek-Chip-MT7921.patch"
+
+        # squashed s0ix enablement
+        "9001-v5.14.14-s0ix-patch-2021-10-20.patch"
+        "9002-Issue-1710-1712-debugging-and-speculative-fixes.patch"
         )
 validpgpkeys=(
     'ABAF11C65A2970B130ABE3C479BE3E4300411886' # Linux Torvalds
     '647F28654894E3BD457199BE38DBBDC86092693E' # Greg Kroah-Hartman
 )
 
-# asus-linux patch management; any patch matching this list is pruned from the patchset during prepare()
-# accepts filenames and bash globs, ** important: don't quote globs **
-_fedora_kernel_patch_skip_list=(
-
-  #00{03,05,08}-drm-amdgpu*.patch      # example multi-select
-  #00{01..12}-drm-amdgpu*.patch        # example range select
-  #patch-*-redhat.patch                # example wildcard match
-  
-  "linux-kernel-test.patch"           # test patch, please ignore
-  patch-*-redhat.patch                # wildcard match any redhat patch version
-  00{01..12}-drm-amdgpu*.patch        # upstreamed in 5.12
-
-  # upstreamed
-  "0001-HID-asus-Filter-keyboard-EC-for-old-ROG-keyboard.patch"
-  "0001-ALSA-hda-realtek-GA503-use-same-quirks-as-GA401.patch"
-
-  # patch broken in 5.12.4, updated patch included in package sources
-  "0001-Add-jack-toggle-support-for-headphones-on-Asus-ROG-Z.patch"
-)
-
-# Archlinux patches
-_commit="be7d4710850020de55bce930c83fa80347c02fc3"
-_patches=("sphinx-workaround.patch")
-for _patch in ${_patches[@]}; do
-    source+=("${_patch}::https://git.archlinux.org/svntogit/packages.git/plain/trunk/${_patch}?h=packages/linux&id=${_commit}")
-done
-
-# apply UKSM patch
-#
-_uksm_patch="https://raw.githubusercontent.com/dolohow/uksm/master/v5.x/uksm-${_major}.patch"
-#_uksm_patch="https://raw.githubusercontent.com/dolohow/uksm/master/v5.x/uksm-5.12.patch"
-if [[ ! -v no_uksm ]]; then
-  source+=("${_uksm_patch##*/}::${_uksm_patch}")
-fi
-
-# Support stacking incremental point releases from kernel.org when we're building ahead of Xanmod
-#
-if [[ ${xanmod%-xanmod?} != ${pkgver%+xanmod?} ]]; then
-  _patch_start=$(echo ${xanmod%-xanmod?} | cut -d'.' -f3)
-  _patch_end=$(echo ${pkgver%+xanmod?} | cut -d'.' -f3)
-  for (( _i=_patch_start; _i < _patch_end; _i++ )); do
-    source+=("https://cdn.kernel.org/pub/linux/kernel/v${_branch}/incr/patch-${_major}.${_i}-$((_i +1)).xz")
-  done
-fi
-
-sha256sums=('7d0df6f2bf2384d68d0bd8e1fe3e071d64364dcdc6002e7b5c87c92d48fac366'
+sha256sums=('7e068b5e0d26a62b10e5320b25dce57588cbbc6f781c090442138c9c9c3271b2'
             'SKIP'
-            '550c0791ec823628b94dd9220942510faef33f2e0912a3cc0d0833f3f16561a1'
+            'e3999a9e5957b425656bcda2a6d938175478ae9b17d15d38010e486ffbcf2076'
             '1ac18cad2578df4a70f9346f7c6fccbb62f042a0ee0594817fdef9f2704904ee'
-            'ce2a5e79ed29c701529f0aa2d854bab79d9f5cbdd173e13774f6e1f4e8ae585f'
-            '5af4796400245fec2e84d6e3f847b8896600558aa85f5e9c4706dd50994a9802'
-            '9cf7519ee1a0544f431c9fe57735aae7b9d150e62abed318837befc3b6af7c5f'
-            '495dc8131b98f4c165107b8f6c1324022b27c9b4442aa1018f78c446f4221d28'
             '52fc0fcd806f34e774e36570b2a739dbdf337f7ff679b1c1139bee54d03301eb'
-            '8b2e476ae108255ae5dc6da43cda57620021a8e68da0e3c568eb44afd3d3254a')
+            '923230ed8367e28adfdeed75d3cdba9eec6b781818c37f6f3d3eb64101d2e716'
+            'f7a4bf6293912bfc4a20743e58a5a266be8c4dbe3c1862d196d3a3b45f2f7c90'
+            'de8c9747637768c4356c06aa65c3f157c526aa420f21fdd5edd0ed06f720a62e'
+            '3d8961438b5c8110588ff0b881d472fc71a4304d306808d78a4055a4150f351e'
+            '1ab75535772c63567384eb2ac74753e4d5db2f3317cb265aedf6151b9f18c6c2'
+            '8cc771f37ee08ad5796e6db64f180c1415a5f6e03eb3045272dade30ca754b53'
+            'f3461e7cc759fd4cef2ec5c4fa15b80fa6d37e16008db223f77ed88a65aa938e'
+            'ec317cc2c2c8c1186c4f553fdd010adc013c37600a499802473653fd8e7564df'
+            '544464bf0807b324120767d55867f03014a9fda4e1804768ca341be902d7ade4'
+            '4ef12029ea73ca924b6397e1de4911e84d9e77ddaccdab1ef579823d848524e8'
+            '0c422d8f420c1518aab1b980c6cdb6e029a4fa9cde1fd99a63670bb105a44f36'
+            '2163cb2e394a013042a40cd3b00dae788603284b20d71e262995366c5534e480'
+            'a01cf700d79b983807e2285be1b30df6e02db6adfd9c9027fe2dfa8ca5a74bc9'
+            '9f6b8c3ea6e1c285e0a7efda4d743dbae343bc6ee7ad599a4ab7d380c750bc83'
+            '4bfbff4eba07fc9de2ce78097a4a269509468ba0e24c15a82905cd94e093ad55'
+            '021f8539ab2fb722b46937b95fdab22a2308236a24ecc1a9ea8db4853721dd39'
+            '1ce9fd988201c4d2e48794c58acda5b768ec0fea1d29555e99d35cd2712281e4'
+            'e7e37c7c433c58e2f5a79e2a7724823bef1dccaa01e857584397b4e3c837d991'
+            'f075ac354acfd65dff4db49dc9798747cb9b7a3dd9839987bc46495bdbbd22dc'
+            '1770fec49335bc93194e9e55ced49e1cb67f2df4bf6948e80712a0b2ba50fa49'
+            '6da4010f86a74125969fd3dbc953da7b45209d33ff3d216474c3399e82e893ff'
+            'eb391b6d1ebf7ef99ece00b23609b94180a1f3c0149bcf05f6bbeb74d0b724c7'
+            'c368cc4eefff20b7ae904eec686b7e72b46ff02b32c8a4fbd6bd4039f087e7ba'
+            '1a8639167a1ee1b66f580c0c6f8304e6ef359a68cfa3eb869d9200a9f0234098'
+            '236cdadf0b1472945c0d7570caeed7b95929aabed6872319c9d0969a819689e9'
+            'cc2aa580d69801aa1afb0d72ecf094fe13c797363d3d5928c868d3a389910b7b'
+            '292a7e32b248c7eee6e2f5407d609d03d985f367d329adb02b9d6dba1f85b44c'
+            '7dbfdd120bc155cad1879579cb9dd1185eb5e37078c8c93fef604a275a163812'
+            '1444af2e125080934c67b6adb4561fd354a72ce47d3de393b24f53832ee492ac'
+            '0bbc0ae2e85b82f8bbd73597dbc8d09a77bea79bf33916bb27218e0cd422c77f'
+            '7ad0449622915bcc9297dc51f567e9f1bf71a43971280d0da07a8cb63b6ed81b')
 
 export KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-archlinux}
-export KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-makepkg}
+export KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-"$pkgbase"}
 export KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP:-$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})}
 
-_fedora_patch_in_skip_list() {
-  for p in "${_fedora_kernel_patch_skip_list[@]}"; do [[ "$1" == $p ]] && return 0; done
-  return 1
-}
-
+# shellcheck disable=SC2154,SC2155
 prepare() {
-  cd linux-${_major}
+  cd "linux-${_major}"
 
-  # Apply Xanmod patch
-  msg2 "Applying Xanmod patch..."
-  patch -Np1 -i ../patch-${xanmod}
-
-  # Apply kernel.org patches when mainline is slightly ahead of Xanmod
-  if [[ ${xanmod%-xanmod?} != ${pkgver%+xanmod?} ]]; then
-      msg2 "Applying kernel.org point-release patches..."
-      for (( _i=_patch_start; _i < _patch_end; _i++ )); do
-        echo "Applying patch ${_major}.${_i} -> ${_major}.$((_i+1))..."
-        patch -Np1 -i ../patch-${_major}.${_i}-$((_i+1))
-      done
-  fi
+  # Apply patches
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    case "$src" in
+      patch-${_major}*xanmod*xz)
+        # Apply Xanmod patch
+        msg2 "Applying Xanmod patch..."
+        patch -Np1 -i "../${src%\.xz}"
+        ;;
+      patch-${_major}*xz)
+        # Apply kernel.org point releases if we're building ahead of Xanmod official
+        msg2 "Applying kernel.org point release ${src%\.xz} ..."
+        patch -Np1 -i "../${src%\.xz}"
+        ;;
+      *patch|*diff)
+        # Apply any other patches
+        msg2 "Applying patch $src..."
+        patch -Np1 < "../$src"
+        ;;
+    esac
+  done
 
   msg2 "Setting version..."
   scripts/setlocalversion --save-scmversion
   echo "-$pkgrel" > localversion.99-pkgrel
   echo "${pkgbase#linux-xanmod}" > localversion.20-pkgname
 
-  # Rewrute xanmod release to 0 if we're pre-releasing
-  [[ ${xanmod%-xanmod?} != ${pkgver%+xanmod?} ]] &&
-    sed -Ei 's/xanmod[0-9]+/xanmod0/' localversion
+  # Monkey patch: rewrite Xanmod release to $_localversion (eg: xanpre0) if we're applying a point release on top of Xanmod
+  if [[ ${xanmod%-xanmod?} != "${pkgver%%\.xan*}" ]]; then
+    msg2 "(Monkey)ing with kernel, rewriting localversion xanmod to $_localversion ..."
+    sed -Ei "s/xanmod[0-9]+/${_localversion}/" localversion
+  fi
 
-  # Archlinux patches
-  local src
-  for src in "${source[@]}"; do
-    src="${src%%::*}"
-    src="${src##*/}"
-    [[ $src = *.patch ]] || continue
-    msg2 "Applying patch $src..."
-    patch -Np1 < "../$src"
-  done
-
-  # ASUS-linux patches
-  # --
-
-  # these patches are a moving target and we're not guaranteed that Luke is building a fedora kernel for our kernel version yet.
-  # we'll make a best effort at patching against our kernel sources and use _fkernel_skip_patches=() list above to filter any
-  # patches that have already been upstreamed or are broken for us
-
-  local p_err=()
-  local p_meh=()
-  local _fkernel_path="../fedora-kernel-${_fedora_kernel_commit_id}"
-  msg2 "Applying asus-linux patches..."
-
-  # this will apply all enabled patches from the fedora-linux kernel.spec
-  for src in $(awk -F ' ' '/^ApplyOptionalPatch.*patch$/{print $2}' "${_fkernel_path}/kernel.spec"); do
-
-    # skip patches in our skip list
-    _fedora_patch_in_skip_list "$src" && continue
-
-    # the redhat patch needs special handling
-    if [[ "$src" == patch*-redhat.patch ]]; then
-      src=${src/\%\{stableversion\}/$_major} ## fixup filename first
-      if [[ ! -v redhat_patch ]]; then
-        plain "Skipping optional redhat patch $src ..."
-        continue
-      fi
-      if [[ ! -f "${_fkernel_path}/$src" ]]; then
-        plain "Skipping redhat patch, no patch available for this kernel ..."
-        continue
-      fi
-    fi
-
-    echo "Applying patch $src..."
-    if OUT="$(patch --forward -Np1 < "${_fkernel_path}/$src")"; then
-      : #plain "Applied patch $src..."
-    else
-      # if you want to ignore a specific patch failure for some reason do it right here
-      # then 'continue'
-      if { echo "$OUT" | grep -qiE 'hunk(|s) FAILED'; }; then
-        error "Patch failed $src" && echo "$OUT" && p_err+=("$src") && _throw=y
-      else
-        warning "Duplicate patch $src" && p_meh+=("$src")
-      fi
-    fi
-  done
-
-  (( ${#p_err[@]} > 0 )) && error "Failed patches:" && for p in ${p_err[@]}; do plain "$p"; done
-  (( ${#p_meh[@]} > 0 )) && warning "Duplicate patches:" && for p in ${p_meh[@]}; do plain "$p"; done
-  [[ -z "$_throw" ]]  # if throw is defined we had a hard patch failure, propagate it and stop so we can address
-  # --
+  # Applying configuration
+  cp -vf CONFIGS/xanmod/${_compiler}/config .config
+  # enable LTO_CLANG_THIN
+  if [ "${_compiler}" = "clang" ]; then
+    scripts/config --disable LTO_CLANG_FULL
+    scripts/config --enable LTO_CLANG_THIN
+    _LLVM=1
+  fi
 
   # CONFIG_STACK_VALIDATION gives better stack traces. Also is enabled in all official kernel packages by Archlinux team
   scripts/config --enable CONFIG_STACK_VALIDATION
@@ -266,9 +257,11 @@ prepare() {
 
   # User set. See at the top of this file
   if [ "$use_tracers" = "n" ]; then
-    msg2 "Disabling FUNCTION_TRACER/GRAPH_TRACER..."
-    scripts/config --disable CONFIG_FUNCTION_TRACER \
-                   --disable CONFIG_STACK_TRACER
+    msg2 "Disabling FUNCTION_TRACER/GRAPH_TRACER only if we are not compiling with clang..."
+    if [ "${_compiler}" = "gcc" ]; then
+      scripts/config --disable CONFIG_FUNCTION_TRACER \
+                     --disable CONFIG_STACK_TRACER
+    fi
   fi
 
   if [ "$use_numa" = "n" ]; then
@@ -276,15 +269,19 @@ prepare() {
     scripts/config --disable CONFIG_NUMA
   fi
 
-  # Let's user choose microarchitecture optimization in GCC
-  sh ${srcdir}/choose-gcc-optimization.sh $_microarchitecture
+  # Compress modules by default (following Arch's kernel)
+  if [ "$_compress_modules" = "y" ]; then
+    scripts/config --disable CONFIG_MODULE_COMPRESS_NONE \
+                   --enable CONFIG_MODULE_COMPRESS_ZSTD
+  fi
 
   # This is intended for the people that want to build this package with their own config
   # Put the file "myconfig" at the package folder (this will take preference) or "${XDG_CONFIG_HOME}/linux-xanmod/myconfig"
   # If we detect partial file with scripts/config commands, we execute as a script
   # If not, it's a full config, will be replaced
-  for _myconfig in "${startdir}/myconfig" "${XDG_CONFIG_HOME}/linux-xanmod/myconfig" ; do
-    if [ -f "${_myconfig}" ]; then
+  for _myconfig in "${startdir}/myconfig" "${HOME}/.config/linux-xanmod/myconfig" "${XDG_CONFIG_HOME}/linux-xanmod/myconfig" ; do
+    # if file exists and size > 0 bytes
+    if [ -s "${_myconfig}" ]; then
       if grep -q 'scripts/config' "${_myconfig}"; then
         # myconfig is a partial file. Executing as a script
         msg2 "Applying myconfig..."
@@ -295,46 +292,64 @@ prepare() {
         cp -f "${_myconfig}" .config
       fi
       echo
+      break
     fi
   done
-
-  make olddefconfig
 
   ### Optionally load needed modules for the make localmodconfig
   # See https://aur.archlinux.org/packages/modprobed-db
   if [ "$_localmodcfg" = "y" ]; then
-    if [ -f $HOME/.config/modprobed.db ]; then
+    if [ -f "$HOME/.config/modprobed.db" ]; then
       msg2 "Running Steven Rostedt's make localmodconfig now"
-      make LSMOD=$HOME/.config/modprobed.db localmodconfig
+      make LLVM=$_LLVM LLVM_IAS=$_LLVM LSMOD="$HOME/.config/modprobed.db" localmodconfig
     else
       msg2 "No modprobed.db data found"
-      exit
+      exit 1
     fi
   fi
+
+  make LLVM=$_LLVM LLVM_IAS=$_LLVM olddefconfig
+
+  # let user choose microarchitecture optimization target;
+  # NOTE: this script must run *after* make olddefconfig so any new uarch macros exist
+  sh "${srcdir}/choose-gcc-optimization.sh" $_microarchitecture
+
+  ## bake in s0ix debugging parameters
+  scripts/config  --enable CONFIG_CMDLINE_BOOL \
+                  --set-str CONFIG_CMDLINE "makepkgplaceholderyolo" \
+                  --disable CMDLINE_OVERRIDE
+
+  ## HACK: forcibly fixup CONFIG_CMDLINE as scripts/config mangles quote escapes
+
+  # note the double escaped quotes here, sed strips one;
+  # the final result in .config needs to look like CONFIG_CMDLINE="foo.dyndbg=\"+p\"" to avoid dyndbg parse errors at boot
+
+  sed -i 's#makepkgplaceholderyolo#pm_debug_messages amd_pmc.enable_stb=1 amd_pmc.dyndbg=\\"+p\\" acpi.dyndbg=\\"file drivers/acpi/x86/s2idle.c +p\\"#' .config
 
   make -s kernelrelease > version
   msg2 "Prepared %s version %s" "$pkgbase" "$(<version)"
 
-  [[ -z "$_makenconfig" ]] || make nconfig
+  [[ -z "$_makenconfig" ]] || make LLVM=$_LLVM LLVM_IAS=$_LLVM nconfig
 
-  # save configuration for later reuse
+  # save configuration for later reuse or inspection
   cat .config > "${SRCDEST}/config.last"
 }
 
 build() {
-  cd linux-${_major}
-  make all
+  cd "linux-${_major}"
+  make LLVM=$_LLVM LLVM_IAS=$_LLVM all
 }
 
+# shellcheck disable=SC2154,SC2155
 _package() {
   pkgdesc="The Linux kernel and modules with Xanmod and ASUS ROG laptop patches (Zephyrus G14, G15, etc)"
   depends=(coreutils kmod initramfs)
   optdepends=('crda: to set the correct wireless channels of your country'
               'linux-firmware: firmware images needed for some devices')
-  provides+=(linux-xanmod-g14)
+  provides+=(linux-xanmod-g14 linux-rog)
   conflicts+=(linux-xanmod-g14)
 
-  cd linux-${_major}
+  cd "linux-${_major}"
   local kernver="$(<version)"
   local modulesdir="$pkgdir/usr/lib/modules/$kernver"
 
@@ -353,13 +368,14 @@ _package() {
   rm "$modulesdir"/{source,build}
 }
 
+# shellcheck disable=SC2154,SC2155
 _package-headers() {
   pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
   depends=(pahole)
-  provides+=(linux-xanmod-g14-headers)
+  provides+=(linux-xanmod-g14-headers linux-rog-headers)
   conflicts+=(linux-xanmod-g14-headers)
 
-  cd linux-${_major}
+  cd "linux-${_major}"
   local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
 
   msg2 "Installing build files..."
@@ -416,18 +432,18 @@ _package-headers() {
   while read -rd '' file; do
     case "$(file -bi "$file")" in
       application/x-sharedlib\;*)      # Libraries (.so)
-        strip -v $STRIP_SHARED "$file" ;;
+        strip -v "$STRIP_SHARED" "$file" ;;
       application/x-archive\;*)        # Libraries (.a)
-        strip -v $STRIP_STATIC "$file" ;;
+        strip -v "$STRIP_STATIC" "$file" ;;
       application/x-executable\;*)     # Binaries
-        strip -v $STRIP_BINARIES "$file" ;;
+        strip -v "$STRIP_BINARIES" "$file" ;;
       application/x-pie-executable\;*) # Relocatable binaries
-        strip -v $STRIP_SHARED "$file" ;;
+        strip -v "$STRIP_SHARED" "$file" ;;
     esac
   done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
 
   msg2 "Stripping vmlinux..."
-  strip -v $STRIP_STATIC "$builddir/vmlinux"
+  strip -v "$STRIP_STATIC" "$builddir/vmlinux"
   msg2 "Adding symlink..."
   mkdir -p "$pkgdir/usr/src"
   ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
